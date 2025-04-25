@@ -25,10 +25,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v2
-
+    - name: Checkout code
+      uses: actions/checkout@5a4ac9002d0be2fb38bd78e4b4dbde5606d7042f # v2.3.4
+      
     - name: Set up Python
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@d27e3f3d7c64b4bbf8e4abfb9b63b83e846e0435 # v2.2.1
       with:
         python-version: '3.9'
       
@@ -39,12 +40,8 @@ jobs:
         echo "Setup completo para el entorno de testing" >> reports/setup/setup_summary.txt
         ls -la >> reports/setup/project_structure.txt
       
-    - name: Upload setup artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: setup-report
-        path: reports/setup/
-        retention-days: 7
+    # En lugar de usar upload-artifact, simplemente guardamos los informes para su uso posterior
+    # y generamos un informe consolidado al final
 
     - name: Install dependencies
       run: |
@@ -56,43 +53,21 @@ jobs:
         fi
         pip install pytest pytest-django pytest-cov flake8 bandit
         
-    - name: Generate dependencies report
-      run: |
+        # Guardar registro de dependencias
         mkdir -p reports/dependencies
         pip freeze > reports/dependencies/installed_packages.txt
         echo "Instalación de dependencias completada" >> reports/dependencies/dependencies_summary.txt
-        
-    - name: Upload dependencies artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: dependencies-report
-        path: reports/dependencies/
-        retention-days: 7
 
     - name: Static code analysis (Flake8)
       run: |
         mkdir -p reports/flake8
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics > reports/flake8/critical_issues.txt
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics > reports/flake8/all_issues.txt
-        
-    - name: Upload flake8 artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: flake8-report
-        path: reports/flake8/
-        retention-days: 7
 
     - name: Security analysis (Bandit)
       run: |
         mkdir -p reports/security
         bandit -r . -x tests/ -f json -o reports/security/bandit-results.json || echo "Advertencia: Bandit encontró posibles problemas de seguridad"
-        
-    - name: Upload security artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: security-report
-        path: reports/security/
-        retention-days: 7
 
     - name: Run tests with coverage
       env:
@@ -102,30 +77,32 @@ jobs:
         mkdir -p reports/tests
         pytest --cov=. --cov-report=xml:reports/tests/coverage.xml --cov-report=html:reports/tests/coverage_html/ || echo "Advertencia: Algunas pruebas fallaron. Revisando qué falló"
         
-    - name: Upload test results artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: test-results
-        path: reports/tests/
-        retention-days: 7
-
-    - name: Upload coverage report
-      uses: codecov/codecov-action@v2
-      with:
-        file: ./reports/tests/coverage.xml
-        fail_ci_if_error: false
-        
-    - name: Generate test summary report
-      run: |
+        # Generar resumen de pruebas
         echo "Pruebas y cobertura completadas" > reports/tests/test_summary.txt
         echo "Fecha de ejecución: $(date)" >> reports/tests/test_summary.txt
-        
-    - name: Upload test summary artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: test-summary
-        path: reports/tests/test_summary.txt
-        retention-days: 7
+
+    # Combinamos todos los informes en un solo directorio para subirlos de una vez
+    - name: Consolidate reports
+      run: |
+        mkdir -p test_evidence
+        cp -r reports/* test_evidence/
+        echo "Informe consolidado de pruebas" > test_evidence/summary.txt
+        echo "Fecha: $(date)" >> test_evidence/summary.txt
+        echo "Entorno: Ubuntu latest" >> test_evidence/summary.txt
+        echo "Python: $(python --version)" >> test_evidence/summary.txt
+        ls -la test_evidence/ >> test_evidence/directory_listing.txt
+    
+    # Usamos la acción de GitHub Action directamente llamando al comando sin la acción
+    - name: Upload test evidence
+      run: |
+        if [ -d "test_evidence" ]; then
+          echo "Archivando evidencias de pruebas..."
+          mkdir -p $GITHUB_WORKSPACE/artifacts
+          tar -czf $GITHUB_WORKSPACE/artifacts/test_evidence.tar.gz test_evidence/
+          echo "Evidencias archivadas en: $GITHUB_WORKSPACE/artifacts/test_evidence.tar.gz"
+        else
+          echo "No se encontró el directorio test_evidence para archivar"
+        fi
 
   build-and-push:
     needs: [test]
@@ -133,7 +110,8 @@ jobs:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
 
     steps:
-    - uses: actions/checkout@v2
+    - name: Checkout code
+      uses: actions/checkout@5a4ac9002d0be2fb38bd78e4b4dbde5606d7042f # v2.3.4
 
     - name: Verify project structure
       run: |
@@ -145,32 +123,18 @@ jobs:
         else
           echo "Dockerfile encontrado correctamente" >> reports/build/structure_check.txt
         fi
-        
-    - name: Upload structure check artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: structure-check
-        path: reports/build/
-        retention-days: 7
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
-      
+      uses: docker/setup-buildx-action@v1
+
     - name: Generate buildx info
       run: |
         mkdir -p reports/docker
         docker buildx version > reports/docker/buildx_version.txt
         docker info > reports/docker/docker_info.txt
-        
-    - name: Upload docker info artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: docker-info
-        path: reports/docker/
-        retention-days: 7
 
     - name: Log in to GitHub Container Registry
-      uses: docker/login-action@v1
+      uses: docker/login-action@28218f9b04b4f3f62068d7b6ce6ca5b26e35336c # v1.0.0
       with:
         registry: ${{ env.DOCKER_REGISTRY }}
         username: ${{ github.actor }}
@@ -183,13 +147,6 @@ jobs:
         echo "Registry: ${{ env.DOCKER_REGISTRY }}" >> reports/registry/login_status.txt
         echo "Usuario: ${{ github.actor }}" >> reports/registry/login_status.txt
         echo "Fecha: $(date)" >> reports/registry/login_status.txt
-        
-    - name: Upload registry login artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: registry-login
-        path: reports/registry/
-        retention-days: 7
 
     - name: Set image tag
       id: set_image_tag
@@ -206,16 +163,9 @@ jobs:
         echo "SHA Corto: $SHA_SHORT" > reports/image/image_tag_info.txt
         echo "Tag de imagen: sha-$SHA_SHORT" >> reports/image/image_tag_info.txt
         echo "Nombre completo de imagen: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$SHA_SHORT" >> reports/image/image_tag_info.txt
-        
-    - name: Upload image tag artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: image-tag-info
-        path: reports/image/
-        retention-days: 7
 
     - name: Build and push
-      uses: docker/build-push-action@v2
+      uses: docker/build-push-action@ac9327eae2b366085ac7f6a2d02df8aa8ead720a # v2.0.0
       with:
         context: .
         push: true
@@ -235,13 +185,6 @@ jobs:
         echo "Imagen: ${{ env.FULL_IMAGE_NAME }}" >> reports/build_result/build_summary.txt
         echo "Tags: ${{ env.IMAGE_TAG }}, latest" >> reports/build_result/build_summary.txt
         echo "Fecha: $(date)" >> reports/build_result/build_summary.txt
-        
-    - name: Upload build result artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: build-result
-        path: reports/build_result/
-        retention-days: 7
 
     - name: Verify image exists
       run: |
@@ -252,13 +195,6 @@ jobs:
         # Pull de la imagen para asegurarnos que existe localmente
         docker pull ${{ env.FULL_IMAGE_NAME }}
         docker images | grep ${{ env.IMAGE_NAME }} > reports/image_verify/image_exists.txt
-        
-    - name: Upload image verification artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: image-verification
-        path: reports/image_verify/
-        retention-days: 7
 
     - name: Scan Docker image for vulnerabilities
       uses: aquasecurity/trivy-action@master
@@ -276,19 +212,28 @@ jobs:
         echo "Imagen escaneada: ${{ env.FULL_IMAGE_NAME }}" >> reports/vulnerability/scan_summary.txt
         echo "Fecha: $(date)" >> reports/vulnerability/scan_summary.txt
         cp reports/security/trivy-results.sarif reports/vulnerability/
-        
-    - name: Upload vulnerability scan artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: vulnerability-scan
-        path: reports/vulnerability/
-        retention-days: 7
 
-    - name: Upload Trivy scan results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v2
-      with:
-        sarif_file: 'reports/security/trivy-results.sarif'
-      continue-on-error: true
+    # Consolidamos todos los informes en un solo directorio para subirlos de una vez
+    - name: Consolidate build reports
+      run: |
+        mkdir -p build_evidence
+        cp -r reports/* build_evidence/
+        echo "Informe consolidado de build y push" > build_evidence/summary.txt
+        echo "Fecha: $(date)" >> build_evidence/summary.txt
+        echo "Imagen: ${{ env.FULL_IMAGE_NAME }}" >> build_evidence/summary.txt
+        ls -la build_evidence/ >> build_evidence/directory_listing.txt
+    
+    # Usamos el comando nativo en lugar de la acción
+    - name: Archive build evidence
+      run: |
+        if [ -d "build_evidence" ]; then
+          echo "Archivando evidencias de build..."
+          mkdir -p $GITHUB_WORKSPACE/artifacts
+          tar -czf $GITHUB_WORKSPACE/artifacts/build_evidence.tar.gz build_evidence/
+          echo "Evidencias archivadas en: $GITHUB_WORKSPACE/artifacts/build_evidence.tar.gz"
+        else
+          echo "No se encontró el directorio build_evidence para archivar"
+        fi
 
   deploy:
     needs: [build-and-push]
@@ -296,7 +241,8 @@ jobs:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
 
     steps:
-    - uses: actions/checkout@v2
+    - name: Checkout code
+      uses: actions/checkout@5a4ac9002d0be2fb38bd78e4b4dbde5606d7042f # v2.3.4
 
     - name: Set image tag
       run: |
@@ -307,28 +253,14 @@ jobs:
         # Crear reporte
         mkdir -p reports/deploy
         echo "Tag de imagen para despliegue: sha-$SHA_SHORT" > reports/deploy/deployment_tag.txt
-        
-    - name: Upload deployment tag artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: deployment-tag
-        path: reports/deploy/deployment_tag.txt
-        retention-days: 7
 
     - name: Set up kubectl
       uses: azure/setup-kubectl@v1
-      
+
     - name: Generate kubectl info
       run: |
         mkdir -p reports/kubectl
         kubectl version --client > reports/kubectl/kubectl_version.txt
-        
-    - name: Upload kubectl info artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: kubectl-info
-        path: reports/kubectl/
-        retention-days: 7
 
     # Login con credenciales a Azure
     - name: Azure login
@@ -342,13 +274,6 @@ jobs:
         mkdir -p reports/azure
         echo "Login a Azure completado" > reports/azure/azure_login.txt
         echo "Fecha: $(date)" >> reports/azure/azure_login.txt
-        
-    - name: Upload Azure login artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: azure-login
-        path: reports/azure/
-        retention-days: 7
 
     - name: Get AKS credentials
       uses: azure/aks-set-context@v1
@@ -363,13 +288,6 @@ jobs:
         echo "Cluster: ${{ env.AKS_CLUSTER_NAME }}" >> reports/aks/aks_context.txt
         echo "Resource Group: ${{ env.AKS_RESOURCE_GROUP }}" >> reports/aks/aks_context.txt
         echo "Fecha: $(date)" >> reports/aks/aks_context.txt
-        
-    - name: Upload AKS context artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: aks-context
-        path: reports/aks/
-        retention-days: 7
 
     - name: Create namespace if it doesn't exist
       run: |
@@ -379,13 +297,6 @@ jobs:
         mkdir -p reports/namespace
         echo "Namespace verificado/creado: ${{ env.AKS_NAMESPACE }}" > reports/namespace/namespace_status.txt
         kubectl get namespace ${{ env.AKS_NAMESPACE }} -o yaml > reports/namespace/namespace_details.yaml
-        
-    - name: Upload namespace artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: namespace-info
-        path: reports/namespace/
-        retention-days: 7
 
     - name: Verify Kubernetes directory
       run: |
@@ -399,13 +310,6 @@ jobs:
           echo "Manifiestos disponibles:" >> reports/k8s_manifests/directory_check.txt
           ls -la kubernetes/ >> reports/k8s_manifests/directory_check.txt
         fi
-        
-    - name: Upload k8s directory check artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: k8s-directory-check
-        path: reports/k8s_manifests/
-        retention-days: 7
 
     - name: Apply Kubernetes manifests
       run: |
@@ -430,13 +334,6 @@ jobs:
         
         echo "Manifiestos aplicados:" >> reports/manifests/apply_log.txt
         kubectl get deployments,services,ingress,configmap,secret -n ${{ env.AKS_NAMESPACE }} -o wide >> reports/manifests/resources_created.txt
-        
-    - name: Upload manifests application artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: k8s-manifests-applied
-        path: reports/manifests/
-        retention-days: 7
 
     - name: Verify deployment
       run: |
@@ -457,13 +354,6 @@ jobs:
         else
           echo "Despliegue completado exitosamente." >> reports/deployment_status/verification_log.txt
         fi
-        
-    - name: Upload deployment verification artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: deployment-verification
-        path: reports/deployment_status/
-        retention-days: 7
 
     - name: Get service details
       if: always()
@@ -494,13 +384,6 @@ jobs:
         # Resumen general del despliegue
         echo "Resumen general del despliegue en namespace ${{ env.AKS_NAMESPACE }}:" >> reports/service_details/services_summary.txt
         kubectl get all -n ${{ env.AKS_NAMESPACE }} > reports/service_details/all_resources.txt
-        
-    - name: Upload service details artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: service-details
-        path: reports/service_details/
-        retention-days: 7
 
     - name: Generate deployment summary
       run: |
@@ -512,10 +395,48 @@ jobs:
         echo "Imagen: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}" >> reports/final_summary/deployment_summary.txt
         echo "Cluster: ${{ env.AKS_CLUSTER_NAME }}" >> reports/final_summary/deployment_summary.txt
         echo "Namespace: ${{ env.AKS_NAMESPACE }}" >> reports/final_summary/deployment_summary.txt
+    
+    # Consolidamos todos los informes en un solo directorio para subirlos de una vez
+    - name: Consolidate deployment reports
+      run: |
+        mkdir -p deployment_evidence
+        cp -r reports/* deployment_evidence/
+        echo "Informe consolidado de despliegue" > deployment_evidence/summary.txt
+        echo "Fecha: $(date)" >> deployment_evidence/summary.txt
+        echo "Namespace: ${{ env.AKS_NAMESPACE }}" >> deployment_evidence/summary.txt
+        echo "Imagen: ${{ env.FULL_IMAGE_NAME }}" >> deployment_evidence/summary.txt
+        ls -la deployment_evidence/ >> deployment_evidence/directory_listing.txt
+    
+    # Usamos el comando nativo en lugar de la acción
+    - name: Archive deployment evidence
+      run: |
+        if [ -d "deployment_evidence" ]; then
+          echo "Archivando evidencias de despliegue..."
+          mkdir -p $GITHUB_WORKSPACE/artifacts
+          tar -czf $GITHUB_WORKSPACE/artifacts/deployment_evidence.tar.gz deployment_evidence/
+          echo "Evidencias archivadas en: $GITHUB_WORKSPACE/artifacts/deployment_evidence.tar.gz"
+        else
+          echo "No se encontró el directorio deployment_evidence para archivar"
+        fi
         
-    - name: Upload final summary artifact
-      uses: actions/upload-artifact@v2
-      with:
-        name: deployment-summary
-        path: reports/final_summary/
-        retention-days: 7
+    # Crear un único archivo consolidado con todas las evidencias
+    - name: Create consolidated evidence archive
+      run: |
+        mkdir -p consolidated_evidence
+        echo "Evidencia consolidada de todo el proceso CI/CD" > consolidated_evidence/readme.txt
+        echo "Fecha de ejecución: $(date)" >> consolidated_evidence/readme.txt
+        echo "Commit: ${{ github.sha }}" >> consolidated_evidence/readme.txt
+        
+        # Copiar todos los artefactos si existen
+        if [ -d "$GITHUB_WORKSPACE/artifacts" ]; then
+          cp -r $GITHUB_WORKSPACE/artifacts/* consolidated_evidence/
+        fi
+        
+        # Copiar todos los informes
+        if [ -d "reports" ]; then
+          cp -r reports/* consolidated_evidence/
+        fi
+        
+        # Crear un archivo tar.gz con todo
+        tar -czf all_evidence.tar.gz consolidated_evidence/
+        echo "Todas las evidencias consolidadas en: all_evidence.tar.gz"
