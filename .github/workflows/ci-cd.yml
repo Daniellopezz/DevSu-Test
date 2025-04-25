@@ -11,6 +11,7 @@ permissions:
   contents: read
   id-token: write # Necesario para la autenticación OIDC de Azure
   packages: write
+  actions: write # Necesario para subir artefactos
 
 env:
   DOCKER_REGISTRY: ghcr.io
@@ -23,21 +24,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
-    services:
-      postgres:
-        image: postgres:13
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: test_db
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
     - uses: actions/checkout@v3
 
@@ -45,6 +31,20 @@ jobs:
       uses: actions/setup-python@v4
       with:
         python-version: '3.9'
+      
+    - name: Generate setup report
+      run: |
+        mkdir -p reports/setup
+        python --version > reports/setup/python_version.txt
+        echo "Setup completo para el entorno de testing" >> reports/setup/setup_summary.txt
+        ls -la >> reports/setup/project_structure.txt
+      
+    - name: Upload setup artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: setup-report
+        path: reports/setup/
+        retention-days: 7
 
     - name: Install dependencies
       run: |
@@ -52,32 +52,80 @@ jobs:
         if [ -f requirements.txt ]; then
           pip install -r requirements.txt
         else
-          echo "⚠️ No se encontró requirements.txt. Intente verificar la estructura del proyecto."
+          echo "No se encontró requirements.txt. Intente verificar la estructura del proyecto."
         fi
         pip install pytest pytest-django pytest-cov flake8 bandit
+        
+    - name: Generate dependencies report
+      run: |
+        mkdir -p reports/dependencies
+        pip freeze > reports/dependencies/installed_packages.txt
+        echo "Instalación de dependencias completada" >> reports/dependencies/dependencies_summary.txt
+        
+    - name: Upload dependencies artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: dependencies-report
+        path: reports/dependencies/
+        retention-days: 7
 
     - name: Static code analysis (Flake8)
       run: |
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+        mkdir -p reports/flake8
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics > reports/flake8/critical_issues.txt
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics > reports/flake8/all_issues.txt
+        
+    - name: Upload flake8 artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: flake8-report
+        path: reports/flake8/
+        retention-days: 7
 
     - name: Security analysis (Bandit)
       run: |
-        bandit -r . -x tests/ -f json -o bandit-results.json || echo "Advertencia: Bandit encontró posibles problemas de seguridad"
+        mkdir -p reports/security
+        bandit -r . -x tests/ -f json -o reports/security/bandit-results.json || echo "Advertencia: Bandit encontró posibles problemas de seguridad"
+        
+    - name: Upload security artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-report
+        path: reports/security/
+        retention-days: 7
 
     - name: Run tests with coverage
       env:
-        DATABASE_URL: postgres://postgres:postgres@localhost:5432/test_db
         SECRET_KEY: testsecretkey
         DEBUG: 'True'
       run: |
-        pytest --cov=. --cov-report=xml || echo "Advertencia: Algunas pruebas fallaron. Revisando qué falló"
+        mkdir -p reports/tests
+        pytest --cov=. --cov-report=xml:reports/tests/coverage.xml --cov-report=html:reports/tests/coverage_html/ || echo "Advertencia: Algunas pruebas fallaron. Revisando qué falló"
+        
+    - name: Upload test results artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-results
+        path: reports/tests/
+        retention-days: 7
 
     - name: Upload coverage report
       uses: codecov/codecov-action@v3
       with:
-        file: ./coverage.xml
+        file: ./reports/tests/coverage.xml
         fail_ci_if_error: false
+        
+    - name: Generate test summary report
+      run: |
+        echo "Pruebas y cobertura completadas" > reports/tests/test_summary.txt
+        echo "Fecha de ejecución: $(date)" >> reports/tests/test_summary.txt
+        
+    - name: Upload test summary artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-summary
+        path: reports/tests/test_summary.txt
+        retention-days: 7
 
   build-and-push:
     needs: [test]
@@ -89,14 +137,37 @@ jobs:
 
     - name: Verify project structure
       run: |
-        echo "Verificando estructura del proyecto..."
+        mkdir -p reports/build
+        echo "Verificando estructura del proyecto..." > reports/build/structure_check.txt
         if [ ! -f "Dockerfile" ]; then
-          echo "⚠️ No se encontró Dockerfile en la raíz del proyecto"
-          ls -la
+          echo "No se encontró Dockerfile en la raíz del proyecto" >> reports/build/structure_check.txt
+          ls -la >> reports/build/project_structure.txt
+        else
+          echo "Dockerfile encontrado correctamente" >> reports/build/structure_check.txt
         fi
+        
+    - name: Upload structure check artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: structure-check
+        path: reports/build/
+        retention-days: 7
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v2
+      
+    - name: Generate buildx info
+      run: |
+        mkdir -p reports/docker
+        docker buildx version > reports/docker/buildx_version.txt
+        docker info > reports/docker/docker_info.txt
+        
+    - name: Upload docker info artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: docker-info
+        path: reports/docker/
+        retention-days: 7
 
     - name: Log in to GitHub Container Registry
       uses: docker/login-action@v2
@@ -104,6 +175,21 @@ jobs:
         registry: ${{ env.DOCKER_REGISTRY }}
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Create docker login report
+      run: |
+        mkdir -p reports/registry
+        echo "Inicio de sesión completado en el registro de contenedores" > reports/registry/login_status.txt
+        echo "Registry: ${{ env.DOCKER_REGISTRY }}" >> reports/registry/login_status.txt
+        echo "Usuario: ${{ github.actor }}" >> reports/registry/login_status.txt
+        echo "Fecha: $(date)" >> reports/registry/login_status.txt
+        
+    - name: Upload registry login artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: registry-login
+        path: reports/registry/
+        retention-days: 7
 
     - name: Set image tag
       id: set_image_tag
@@ -114,6 +200,19 @@ jobs:
         # Formato de tag: latest y sha-SHORT_SHA
         echo "IMAGE_TAG=sha-$SHA_SHORT" >> $GITHUB_ENV
         echo "FULL_IMAGE_NAME=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$SHA_SHORT" >> $GITHUB_ENV
+        
+        # Crear reporte
+        mkdir -p reports/image
+        echo "SHA Corto: $SHA_SHORT" > reports/image/image_tag_info.txt
+        echo "Tag de imagen: sha-$SHA_SHORT" >> reports/image/image_tag_info.txt
+        echo "Nombre completo de imagen: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$SHA_SHORT" >> reports/image/image_tag_info.txt
+        
+    - name: Upload image tag artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: image-tag-info
+        path: reports/image/
+        retention-days: 7
 
     - name: Build and push
       uses: docker/build-push-action@v4
@@ -128,29 +227,67 @@ jobs:
           org.opencontainers.image.revision=${{ github.sha }}
         cache-from: type=registry,ref=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
         cache-to: type=registry,ref=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+        
+    - name: Generate build report
+      run: |
+        mkdir -p reports/build_result
+        echo "Build y push completados" > reports/build_result/build_summary.txt
+        echo "Imagen: ${{ env.FULL_IMAGE_NAME }}" >> reports/build_result/build_summary.txt
+        echo "Tags: ${{ env.IMAGE_TAG }}, latest" >> reports/build_result/build_summary.txt
+        echo "Fecha: $(date)" >> reports/build_result/build_summary.txt
+        
+    - name: Upload build result artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-result
+        path: reports/build_result/
+        retention-days: 7
 
     - name: Verify image exists
       run: |
-        echo "Verificando que la imagen existe en el registro..."
-        echo "Imagen a verificar: ${{ env.FULL_IMAGE_NAME }}"
+        mkdir -p reports/image_verify
+        echo "Verificando que la imagen existe en el registro..." > reports/image_verify/image_check.txt
+        echo "Imagen a verificar: ${{ env.FULL_IMAGE_NAME }}" >> reports/image_verify/image_check.txt
         
         # Pull de la imagen para asegurarnos que existe localmente
         docker pull ${{ env.FULL_IMAGE_NAME }}
-        docker images | grep ${{ env.IMAGE_NAME }}
+        docker images | grep ${{ env.IMAGE_NAME }} > reports/image_verify/image_exists.txt
+        
+    - name: Upload image verification artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: image-verification
+        path: reports/image_verify/
+        retention-days: 7
 
     - name: Scan Docker image for vulnerabilities
       uses: aquasecurity/trivy-action@master
       with:
         image-ref: ${{ env.FULL_IMAGE_NAME }}
         format: 'sarif'
-        output: 'trivy-results.sarif'
+        output: 'reports/security/trivy-results.sarif'
         severity: 'CRITICAL,HIGH'
       continue-on-error: true
+      
+    - name: Generate vulnerability scan summary
+      run: |
+        mkdir -p reports/vulnerability
+        echo "Escaneo de vulnerabilidades completado" > reports/vulnerability/scan_summary.txt
+        echo "Imagen escaneada: ${{ env.FULL_IMAGE_NAME }}" >> reports/vulnerability/scan_summary.txt
+        echo "Fecha: $(date)" >> reports/vulnerability/scan_summary.txt
+        cp reports/security/trivy-results.sarif reports/vulnerability/
+        
+    - name: Upload vulnerability scan artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: vulnerability-scan
+        path: reports/vulnerability/
+        retention-days: 7
 
     - name: Upload Trivy scan results to GitHub Security tab
       uses: github/codeql-action/upload-sarif@v2
       with:
-        sarif_file: 'trivy-results.sarif'
+        sarif_file: 'reports/security/trivy-results.sarif'
       continue-on-error: true
 
   deploy:
@@ -166,38 +303,109 @@ jobs:
         # Usar mismo formato de tag que en build-and-push
         SHA_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
         echo "IMAGE_TAG=sha-$SHA_SHORT" >> $GITHUB_ENV
+        
+        # Crear reporte
+        mkdir -p reports/deploy
+        echo "Tag de imagen para despliegue: sha-$SHA_SHORT" > reports/deploy/deployment_tag.txt
+        
+    - name: Upload deployment tag artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: deployment-tag
+        path: reports/deploy/deployment_tag.txt
+        retention-days: 7
 
     - name: Set up kubectl
       uses: azure/setup-kubectl@v3
+      
+    - name: Generate kubectl info
+      run: |
+        mkdir -p reports/kubectl
+        kubectl version --client > reports/kubectl/kubectl_version.txt
+        
+    - name: Upload kubectl info artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: kubectl-info
+        path: reports/kubectl/
+        retention-days: 7
 
-    # Corregido para usar autenticación con creds
+    # Login con credenciales a Azure
     - name: Azure login
       uses: azure/login@v1
       with:
         creds: ${{ secrets.AZURE_CREDENTIALS }}
         enable-AzPSSession: false
+        
+    - name: Generate Azure login report
+      run: |
+        mkdir -p reports/azure
+        echo "Login a Azure completado" > reports/azure/azure_login.txt
+        echo "Fecha: $(date)" >> reports/azure/azure_login.txt
+        
+    - name: Upload Azure login artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: azure-login
+        path: reports/azure/
+        retention-days: 7
 
     - name: Get AKS credentials
       uses: azure/aks-set-context@v3
       with:
         resource-group: ${{ env.AKS_RESOURCE_GROUP }}
         cluster-name: ${{ env.AKS_CLUSTER_NAME }}
+        
+    - name: Generate AKS credentials report
+      run: |
+        mkdir -p reports/aks
+        echo "Contexto de AKS obtenido correctamente" > reports/aks/aks_context.txt
+        echo "Cluster: ${{ env.AKS_CLUSTER_NAME }}" >> reports/aks/aks_context.txt
+        echo "Resource Group: ${{ env.AKS_RESOURCE_GROUP }}" >> reports/aks/aks_context.txt
+        echo "Fecha: $(date)" >> reports/aks/aks_context.txt
+        
+    - name: Upload AKS context artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: aks-context
+        path: reports/aks/
+        retention-days: 7
 
     - name: Create namespace if it doesn't exist
       run: |
         kubectl create namespace ${{ env.AKS_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+        
+        # Crear reporte
+        mkdir -p reports/namespace
+        echo "Namespace verificado/creado: ${{ env.AKS_NAMESPACE }}" > reports/namespace/namespace_status.txt
+        kubectl get namespace ${{ env.AKS_NAMESPACE }} -o yaml > reports/namespace/namespace_details.yaml
+        
+    - name: Upload namespace artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: namespace-info
+        path: reports/namespace/
+        retention-days: 7
 
     - name: Verify Kubernetes directory
       run: |
+        mkdir -p reports/k8s_manifests
         if [ ! -d "kubernetes" ]; then
-          echo "❌ Error: No se encontró el directorio kubernetes que contiene los manifiestos de despliegue."
-          ls -la
+          echo "Error: No se encontró el directorio kubernetes que contiene los manifiestos de despliegue." > reports/k8s_manifests/directory_check.txt
+          ls -la > reports/k8s_manifests/root_directory.txt
           exit 1
         else
-          echo "✅ Se encontró el directorio kubernetes."
-          echo "Manifiestos disponibles:"
-          ls -la kubernetes/
+          echo "Se encontró el directorio kubernetes." > reports/k8s_manifests/directory_check.txt
+          echo "Manifiestos disponibles:" >> reports/k8s_manifests/directory_check.txt
+          ls -la kubernetes/ >> reports/k8s_manifests/directory_check.txt
         fi
+        
+    - name: Upload k8s directory check artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: k8s-directory-check
+        path: reports/k8s_manifests/
+        retention-days: 7
 
     - name: Apply Kubernetes manifests
       run: |
@@ -205,65 +413,109 @@ jobs:
         export DOCKER_REGISTRY=${{ env.DOCKER_REGISTRY }}
         export IMAGE_NAME=${{ env.IMAGE_NAME }}
         
-        echo "Reemplazando variables en los manifiestos Kubernetes..."
+        mkdir -p reports/manifests
+        echo "Reemplazando variables en los manifiestos Kubernetes..." > reports/manifests/apply_log.txt
         for file in kubernetes/*.yaml kubernetes/*.yml; do
           if [ -f "$file" ]; then
-            echo "Procesando $file"
+            echo "Procesando $file" >> reports/manifests/apply_log.txt
             envsubst < $file > temp.yaml
             mv temp.yaml $file
+            # Guardar una copia del manifiesto procesado
+            cp $file reports/manifests/$(basename $file)
           fi
         done
         
-        echo "Aplicando manifiestos en el namespace ${{ env.AKS_NAMESPACE }}..."
-        kubectl apply -f kubernetes/ -n ${{ env.AKS_NAMESPACE }}
+        echo "Aplicando manifiestos en el namespace ${{ env.AKS_NAMESPACE }}..." >> reports/manifests/apply_log.txt
+        kubectl apply -f kubernetes/ -n ${{ env.AKS_NAMESPACE }} >> reports/manifests/apply_results.txt 2>&1
         
-        echo "Manifiestos aplicados:"
-        kubectl get deployments,services,ingress,configmap,secret -n ${{ env.AKS_NAMESPACE }} -o wide
+        echo "Manifiestos aplicados:" >> reports/manifests/apply_log.txt
+        kubectl get deployments,services,ingress,configmap,secret -n ${{ env.AKS_NAMESPACE }} -o wide >> reports/manifests/resources_created.txt
+        
+    - name: Upload manifests application artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: k8s-manifests-applied
+        path: reports/manifests/
+        retention-days: 7
 
     - name: Verify deployment
       run: |
-        echo "Verificando estado del despliegue..."
-        kubectl rollout status deployment/devsu-demo-app -n ${{ env.AKS_NAMESPACE }} --timeout=300s || true
+        mkdir -p reports/deployment_status
+        echo "Verificando estado del despliegue..." > reports/deployment_status/verification_log.txt
+        kubectl rollout status deployment/devsu-demo-app -n ${{ env.AKS_NAMESPACE }} --timeout=300s >> reports/deployment_status/rollout_status.txt 2>&1 || true
         
         # Comprobar si el despliegue realmente falló o solo tardó más de lo esperado
         DEPLOY_STATUS=$(kubectl get deployment devsu-demo-app -n ${{ env.AKS_NAMESPACE }} -o jsonpath='{.status.conditions[?(@.type=="Available")].status}')
         if [ "$DEPLOY_STATUS" != "True" ]; then
-          echo "⚠️ El despliegue no está disponible aún. Comprobando logs y eventos..."
-          echo "Eventos del namespace:"
-          kubectl get events -n ${{ env.AKS_NAMESPACE }} --sort-by='.lastTimestamp' | tail -n 20
-          echo "Logs de los pods (si existen):"
-          kubectl logs -l app=devsu-demo-app -n ${{ env.AKS_NAMESPACE }} --tail=50 || true
-          echo "Detalles de los pods:"
-          kubectl describe pods -l app=devsu-demo-app -n ${{ env.AKS_NAMESPACE }} || true
+          echo "El despliegue no está disponible aún. Comprobando logs y eventos..." >> reports/deployment_status/verification_log.txt
+          echo "Eventos del namespace:" >> reports/deployment_status/verification_log.txt
+          kubectl get events -n ${{ env.AKS_NAMESPACE }} --sort-by='.lastTimestamp' | tail -n 20 > reports/deployment_status/events.txt
+          echo "Logs de los pods (si existen):" >> reports/deployment_status/verification_log.txt
+          kubectl logs -l app=devsu-demo-app -n ${{ env.AKS_NAMESPACE }} --tail=50 > reports/deployment_status/pod_logs.txt 2>&1 || true
+          echo "Detalles de los pods:" >> reports/deployment_status/verification_log.txt
+          kubectl describe pods -l app=devsu-demo-app -n ${{ env.AKS_NAMESPACE }} > reports/deployment_status/pod_details.txt 2>&1 || true
         else
-          echo "✅ Despliegue completado exitosamente."
+          echo "Despliegue completado exitosamente." >> reports/deployment_status/verification_log.txt
         fi
+        
+    - name: Upload deployment verification artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: deployment-verification
+        path: reports/deployment_status/
+        retention-days: 7
 
     - name: Get service details
       if: always()
       run: |
-        echo "✅ Información del servicio desplegado:"
+        mkdir -p reports/service_details
+        echo "Información del servicio desplegado:" > reports/service_details/services_summary.txt
         
         # Obtener detalles del servicio
-        kubectl get services -n ${{ env.AKS_NAMESPACE }} -o wide
+        kubectl get services -n ${{ env.AKS_NAMESPACE }} -o wide > reports/service_details/services.txt
         
         # Obtener detalles del ingress y la URL de acceso
         INGRESS_EXISTS=$(kubectl get ingress -n ${{ env.AKS_NAMESPACE }} 2>/dev/null || echo "none")
         if [ "$INGRESS_EXISTS" != "none" ]; then
-          echo "📌 Detalles del Ingress:"
-          kubectl get ingress -n ${{ env.AKS_NAMESPACE }} -o wide
+          echo "Detalles del Ingress:" >> reports/service_details/services_summary.txt
+          kubectl get ingress -n ${{ env.AKS_NAMESPACE }} -o wide > reports/service_details/ingress.txt
           
           # Intentar obtener la URL de acceso si existe un ingress
           INGRESS_HOST=$(kubectl get ingress devsu-demo-ingress -n ${{ env.AKS_NAMESPACE }} -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || echo "")
           if [ -n "$INGRESS_HOST" ]; then
-            echo "🌐 La aplicación estará disponible en: http://$INGRESS_HOST"
+            echo "La aplicación estará disponible en: http://$INGRESS_HOST" >> reports/service_details/access_url.txt
           else
-            echo "ℹ️ No se pudo determinar la URL de acceso desde el ingress."
+            echo "No se pudo determinar la URL de acceso desde el ingress." >> reports/service_details/access_url.txt
           fi
         else
-          echo "ℹ️ No hay recursos ingress configurados"
+          echo "No hay recursos ingress configurados" >> reports/service_details/services_summary.txt
         fi
         
         # Resumen general del despliegue
-        echo "📊 Resumen general del despliegue en namespace ${{ env.AKS_NAMESPACE }}:"
-        kubectl get all -n ${{ env.AKS_NAMESPACE }}
+        echo "Resumen general del despliegue en namespace ${{ env.AKS_NAMESPACE }}:" >> reports/service_details/services_summary.txt
+        kubectl get all -n ${{ env.AKS_NAMESPACE }} > reports/service_details/all_resources.txt
+        
+    - name: Upload service details artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: service-details
+        path: reports/service_details/
+        retention-days: 7
+
+    - name: Generate deployment summary
+      run: |
+        mkdir -p reports/final_summary
+        echo "Resumen de despliegue completo" > reports/final_summary/deployment_summary.txt
+        echo "Fecha: $(date)" >> reports/final_summary/deployment_summary.txt
+        echo "Rama: ${{ github.ref }}" >> reports/final_summary/deployment_summary.txt
+        echo "Commit: ${{ github.sha }}" >> reports/final_summary/deployment_summary.txt
+        echo "Imagen: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}" >> reports/final_summary/deployment_summary.txt
+        echo "Cluster: ${{ env.AKS_CLUSTER_NAME }}" >> reports/final_summary/deployment_summary.txt
+        echo "Namespace: ${{ env.AKS_NAMESPACE }}" >> reports/final_summary/deployment_summary.txt
+        
+    - name: Upload final summary artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: deployment-summary
+        path: reports/final_summary/
+        retention-days: 7

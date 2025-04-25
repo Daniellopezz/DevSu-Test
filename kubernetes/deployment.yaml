@@ -60,22 +60,3 @@ spec:
           allowPrivilegeEscalation: false
       securityContext:
         fsGroup: 1000
-
---- 
-
-apiVersion: v1
-kind: Service
-metadata:
-  name: devsu-demo-app
-  namespace: devsu-demo
-  labels:
-    app: devsu-demo-app
-spec:
-  selector:
-    app: devsu-demo-app
-  ports:
-  - port: 80
-    targetPort: 8000
-    protocol: TCP
-    name: http
-  type: ClusterIP
