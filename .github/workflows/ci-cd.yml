@@ -25,10 +25,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v2
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v2
       with:
         python-version: '3.9'
       
@@ -40,7 +40,7 @@ jobs:
         ls -la >> reports/setup/project_structure.txt
       
     - name: Upload setup artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: setup-report
         path: reports/setup/
@@ -63,7 +63,7 @@ jobs:
         echo "Instalación de dependencias completada" >> reports/dependencies/dependencies_summary.txt
         
     - name: Upload dependencies artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: dependencies-report
         path: reports/dependencies/
@@ -76,7 +76,7 @@ jobs:
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics > reports/flake8/all_issues.txt
         
     - name: Upload flake8 artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: flake8-report
         path: reports/flake8/
@@ -88,7 +88,7 @@ jobs:
         bandit -r . -x tests/ -f json -o reports/security/bandit-results.json || echo "Advertencia: Bandit encontró posibles problemas de seguridad"
         
     - name: Upload security artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: security-report
         path: reports/security/
@@ -103,14 +103,14 @@ jobs:
         pytest --cov=. --cov-report=xml:reports/tests/coverage.xml --cov-report=html:reports/tests/coverage_html/ || echo "Advertencia: Algunas pruebas fallaron. Revisando qué falló"
         
     - name: Upload test results artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: test-results
         path: reports/tests/
         retention-days: 7
 
     - name: Upload coverage report
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v2
       with:
         file: ./reports/tests/coverage.xml
         fail_ci_if_error: false
@@ -121,7 +121,7 @@ jobs:
         echo "Fecha de ejecución: $(date)" >> reports/tests/test_summary.txt
         
     - name: Upload test summary artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: test-summary
         path: reports/tests/test_summary.txt
@@ -133,7 +133,7 @@ jobs:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v2
 
     - name: Verify project structure
       run: |
@@ -147,7 +147,7 @@ jobs:
         fi
         
     - name: Upload structure check artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: structure-check
         path: reports/build/
@@ -163,14 +163,14 @@ jobs:
         docker info > reports/docker/docker_info.txt
         
     - name: Upload docker info artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: docker-info
         path: reports/docker/
         retention-days: 7
 
     - name: Log in to GitHub Container Registry
-      uses: docker/login-action@v2
+      uses: docker/login-action@v1
       with:
         registry: ${{ env.DOCKER_REGISTRY }}
         username: ${{ github.actor }}
@@ -185,7 +185,7 @@ jobs:
         echo "Fecha: $(date)" >> reports/registry/login_status.txt
         
     - name: Upload registry login artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: registry-login
         path: reports/registry/
@@ -208,14 +208,14 @@ jobs:
         echo "Nombre completo de imagen: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$SHA_SHORT" >> reports/image/image_tag_info.txt
         
     - name: Upload image tag artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: image-tag-info
         path: reports/image/
         retention-days: 7
 
     - name: Build and push
-      uses: docker/build-push-action@v4
+      uses: docker/build-push-action@v2
       with:
         context: .
         push: true
@@ -237,7 +237,7 @@ jobs:
         echo "Fecha: $(date)" >> reports/build_result/build_summary.txt
         
     - name: Upload build result artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: build-result
         path: reports/build_result/
@@ -254,7 +254,7 @@ jobs:
         docker images | grep ${{ env.IMAGE_NAME }} > reports/image_verify/image_exists.txt
         
     - name: Upload image verification artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: image-verification
         path: reports/image_verify/
@@ -278,7 +278,7 @@ jobs:
         cp reports/security/trivy-results.sarif reports/vulnerability/
         
     - name: Upload vulnerability scan artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: vulnerability-scan
         path: reports/vulnerability/
@@ -296,7 +296,7 @@ jobs:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v2
 
     - name: Set image tag
       run: |
@@ -309,14 +309,14 @@ jobs:
         echo "Tag de imagen para despliegue: sha-$SHA_SHORT" > reports/deploy/deployment_tag.txt
         
     - name: Upload deployment tag artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: deployment-tag
         path: reports/deploy/deployment_tag.txt
         retention-days: 7
 
     - name: Set up kubectl
-      uses: azure/setup-kubectl@v3
+      uses: azure/setup-kubectl@v1
       
     - name: Generate kubectl info
       run: |
@@ -324,7 +324,7 @@ jobs:
         kubectl version --client > reports/kubectl/kubectl_version.txt
         
     - name: Upload kubectl info artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: kubectl-info
         path: reports/kubectl/
@@ -344,14 +344,14 @@ jobs:
         echo "Fecha: $(date)" >> reports/azure/azure_login.txt
         
     - name: Upload Azure login artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: azure-login
         path: reports/azure/
         retention-days: 7
 
     - name: Get AKS credentials
-      uses: azure/aks-set-context@v3
+      uses: azure/aks-set-context@v1
       with:
         resource-group: ${{ env.AKS_RESOURCE_GROUP }}
         cluster-name: ${{ env.AKS_CLUSTER_NAME }}
@@ -365,7 +365,7 @@ jobs:
         echo "Fecha: $(date)" >> reports/aks/aks_context.txt
         
     - name: Upload AKS context artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: aks-context
         path: reports/aks/
@@ -381,7 +381,7 @@ jobs:
         kubectl get namespace ${{ env.AKS_NAMESPACE }} -o yaml > reports/namespace/namespace_details.yaml
         
     - name: Upload namespace artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: namespace-info
         path: reports/namespace/
@@ -401,7 +401,7 @@ jobs:
         fi
         
     - name: Upload k8s directory check artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: k8s-directory-check
         path: reports/k8s_manifests/
@@ -432,7 +432,7 @@ jobs:
         kubectl get deployments,services,ingress,configmap,secret -n ${{ env.AKS_NAMESPACE }} -o wide >> reports/manifests/resources_created.txt
         
     - name: Upload manifests application artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: k8s-manifests-applied
         path: reports/manifests/
@@ -459,7 +459,7 @@ jobs:
         fi
         
     - name: Upload deployment verification artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: deployment-verification
         path: reports/deployment_status/
@@ -496,7 +496,7 @@ jobs:
         kubectl get all -n ${{ env.AKS_NAMESPACE }} > reports/service_details/all_resources.txt
         
     - name: Upload service details artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: service-details
         path: reports/service_details/
@@ -514,7 +514,7 @@ jobs:
         echo "Namespace: ${{ env.AKS_NAMESPACE }}" >> reports/final_summary/deployment_summary.txt
         
     - name: Upload final summary artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: deployment-summary
         path: reports/final_summary/
