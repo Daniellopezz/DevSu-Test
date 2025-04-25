@@ -23,21 +23,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
-    services:
-      postgres:
-        image: postgres:13
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: test_db
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
     - uses: actions/checkout@v3
 
@@ -67,7 +52,6 @@ jobs:
 
     - name: Run tests with coverage
       env:
-        DATABASE_URL: postgres://postgres:postgres@localhost:5432/test_db
         SECRET_KEY: testsecretkey
         DEBUG: 'True'
       run: |
@@ -190,11 +174,11 @@ jobs:
     - name: Verify Kubernetes directory
       run: |
         if [ ! -d "kubernetes" ]; then
-          echo "❌ Error: No se encontró el directorio kubernetes que contiene los manifiestos de despliegue."
+          echo "Error: No se encontró el directorio kubernetes que contiene los manifiestos de despliegue."
           ls -la
           exit 1
         else
-          echo "✅ Se encontró el directorio kubernetes."
+          echo "Se encontró el directorio kubernetes."
           echo "Manifiestos disponibles:"
           ls -la kubernetes/
         fi
@@ -236,13 +220,13 @@ jobs:
           echo "Detalles de los pods:"
           kubectl describe pods -l app=devsu-demo-app -n ${{ env.AKS_NAMESPACE }} || true
         else
-          echo "✅ Despliegue completado exitosamente."
+          echo "Despliegue completado exitosamente."
         fi
 
     - name: Get service details
       if: always()
       run: |
-        echo "✅ Información del servicio desplegado:"
+        echo "Información del servicio desplegado:"
         
         # Obtener detalles del servicio
         kubectl get services -n ${{ env.AKS_NAMESPACE }} -o wide
@@ -250,23 +234,20 @@ jobs:
         # Obtener detalles del ingress y la URL de acceso
         INGRESS_EXISTS=$(kubectl get ingress -n ${{ env.AKS_NAMESPACE }} 2>/dev/null || echo "none")
         if [ "$INGRESS_EXISTS" != "none" ]; then
-          echo "📌 Detalles del Ingress:"
+          echo " Detalles del Ingress:"
           kubectl get ingress -n ${{ env.AKS_NAMESPACE }} -o wide
           
           # Intentar obtener la URL de acceso si existe un ingress
           INGRESS_HOST=$(kubectl get ingress devsu-demo-ingress -n ${{ env.AKS_NAMESPACE }} -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || echo "")
           if [ -n "$INGRESS_HOST" ]; then
-            echo "🌐 La aplicación estará disponible en: http://$INGRESS_HOST"
+            echo "La aplicación estará disponible en: http://$INGRESS_HOST"
           else
-            echo "ℹ️ No se pudo determinar la URL de acceso desde el ingress."
+            echo "ℹNo se pudo determinar la URL de acceso desde el ingress."
           fi
         else
-          echo "ℹ️ No hay recursos ingress configurados"
+          echo " No hay recursos ingress configurados"
         fi
         
         # Resumen general del despliegue
-        echo "📊 Resumen general del despliegue en namespace ${{ env.AKS_NAMESPACE }}:"
+        echo "Resumen general del despliegue en namespace ${{ env.AKS_NAMESPACE }}:"
         kubectl get all -n ${{ env.AKS_NAMESPACE }}
-
-
-        
