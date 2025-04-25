@@ -267,3 +267,6 @@ jobs:
         # Resumen general del despliegue
         echo "📊 Resumen general del despliegue en namespace ${{ env.AKS_NAMESPACE }}:"
         kubectl get all -n ${{ env.AKS_NAMESPACE }}
+
+
+        
