@@ -1,0 +1,43 @@
+# Archivos de logs
+*.log
+
+# Archivos de internacionalización
+*.pot
+
+# Python: bytecode y caché
+*.pyc
+__pycache__/
+
+
+db.sqlite3
+
+
+
+.terraform/
+*.tfstate
+*.tfstate.backup
+crash.log
+
+# GitHub Actions (opcional si tienes temp files)
+*.pid
+
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+.crash.log
+*.backup
+errored.tfstate
+
+# Terraform override/config
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Opcional: ignora lock si no quieres versionar proveedores
+#.terraform.lock.hcl

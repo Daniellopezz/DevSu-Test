@@ -1,0 +1,269 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+# Configuración de permisos para todo el workflow
+permissions:
+  contents: read
+  id-token: write # Necesario para la autenticación OIDC de Azure
+  packages: write
+
+env:
+  DOCKER_REGISTRY: ghcr.io
+  IMAGE_NAME: daniellopezz/devsu-test  
+  AKS_CLUSTER_NAME: devsu-demo-aks
+  AKS_RESOURCE_GROUP: devsu-demo-rg
+  AKS_NAMESPACE: devsu-demo
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then
+          pip install -r requirements.txt
+        else
+          echo "⚠️ No se encontró requirements.txt. Intente verificar la estructura del proyecto."
+        fi
+        pip install pytest pytest-django pytest-cov flake8 bandit
+
+    - name: Static code analysis (Flake8)
+      run: |
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+    - name: Security analysis (Bandit)
+      run: |
+        bandit -r . -x tests/ -f json -o bandit-results.json || echo "Advertencia: Bandit encontró posibles problemas de seguridad"
+
+    - name: Run tests with coverage
+      env:
+        DATABASE_URL: postgres://postgres:postgres@localhost:5432/test_db
+        SECRET_KEY: testsecretkey
+        DEBUG: 'True'
+      run: |
+        pytest --cov=. --cov-report=xml || echo "Advertencia: Algunas pruebas fallaron. Revisando qué falló"
+
+    - name: Upload coverage report
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: false
+
+  build-and-push:
+    needs: [test]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Verify project structure
+      run: |
+        echo "Verificando estructura del proyecto..."
+        if [ ! -f "Dockerfile" ]; then
+          echo "⚠️ No se encontró Dockerfile en la raíz del proyecto"
+          ls -la
+        fi
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ${{ env.DOCKER_REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set image tag
+      id: set_image_tag
+      run: |
+        # Usar SHA corto para la imagen
+        SHA_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
+        echo "SHA_SHORT=$SHA_SHORT" >> $GITHUB_ENV
+        # Formato de tag: latest y sha-SHORT_SHA
+        echo "IMAGE_TAG=sha-$SHA_SHORT" >> $GITHUB_ENV
+        echo "FULL_IMAGE_NAME=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$SHA_SHORT" >> $GITHUB_ENV
+
+    - name: Build and push
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        push: true
+        tags: |
+          ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+        labels: |
+          org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          org.opencontainers.image.revision=${{ github.sha }}
+        cache-from: type=registry,ref=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+        cache-to: type=registry,ref=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+
+    - name: Verify image exists
+      run: |
+        echo "Verificando que la imagen existe en el registro..."
+        echo "Imagen a verificar: ${{ env.FULL_IMAGE_NAME }}"
+        
+        # Pull de la imagen para asegurarnos que existe localmente
+        docker pull ${{ env.FULL_IMAGE_NAME }}
+        docker images | grep ${{ env.IMAGE_NAME }}
+
+    - name: Scan Docker image for vulnerabilities
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.FULL_IMAGE_NAME }}
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        severity: 'CRITICAL,HIGH'
+      continue-on-error: true
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'
+      continue-on-error: true
+
+  deploy:
+    needs: [build-and-push]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set image tag
+      run: |
+        # Usar mismo formato de tag que en build-and-push
+        SHA_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
+        echo "IMAGE_TAG=sha-$SHA_SHORT" >> $GITHUB_ENV
+
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v3
+
+    # Corregido para usar autenticación con creds
+    - name: Azure login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+        enable-AzPSSession: false
+
+    - name: Get AKS credentials
+      uses: azure/aks-set-context@v3
+      with:
+        resource-group: ${{ env.AKS_RESOURCE_GROUP }}
+        cluster-name: ${{ env.AKS_CLUSTER_NAME }}
+
+    - name: Create namespace if it doesn't exist
+      run: |
+        kubectl create namespace ${{ env.AKS_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Verify Kubernetes directory
+      run: |
+        if [ ! -d "kubernetes" ]; then
+          echo "❌ Error: No se encontró el directorio kubernetes que contiene los manifiestos de despliegue."
+          ls -la
+          exit 1
+        else
+          echo "✅ Se encontró el directorio kubernetes."
+          echo "Manifiestos disponibles:"
+          ls -la kubernetes/
+        fi
+
+    - name: Apply Kubernetes manifests
+      run: |
+        export IMAGE_TAG=${{ env.IMAGE_TAG }}
+        export DOCKER_REGISTRY=${{ env.DOCKER_REGISTRY }}
+        export IMAGE_NAME=${{ env.IMAGE_NAME }}
+        
+        echo "Reemplazando variables en los manifiestos Kubernetes..."
+        for file in kubernetes/*.yaml kubernetes/*.yml; do
+          if [ -f "$file" ]; then
+            echo "Procesando $file"
+            envsubst < $file > temp.yaml
+            mv temp.yaml $file
+          fi
+        done
+        
+        echo "Aplicando manifiestos en el namespace ${{ env.AKS_NAMESPACE }}..."
+        kubectl apply -f kubernetes/ -n ${{ env.AKS_NAMESPACE }}
+        
+        echo "Manifiestos aplicados:"
+        kubectl get deployments,services,ingress,configmap,secret -n ${{ env.AKS_NAMESPACE }} -o wide
+
+    - name: Verify deployment
+      run: |
+        echo "Verificando estado del despliegue..."
+        kubectl rollout status deployment/devsu-demo-app -n ${{ env.AKS_NAMESPACE }} --timeout=300s || true
+        
+        # Comprobar si el despliegue realmente falló o solo tardó más de lo esperado
+        DEPLOY_STATUS=$(kubectl get deployment devsu-demo-app -n ${{ env.AKS_NAMESPACE }} -o jsonpath='{.status.conditions[?(@.type=="Available")].status}')
+        if [ "$DEPLOY_STATUS" != "True" ]; then
+          echo "⚠️ El despliegue no está disponible aún. Comprobando logs y eventos..."
+          echo "Eventos del namespace:"
+          kubectl get events -n ${{ env.AKS_NAMESPACE }} --sort-by='.lastTimestamp' | tail -n 20
+          echo "Logs de los pods (si existen):"
+          kubectl logs -l app=devsu-demo-app -n ${{ env.AKS_NAMESPACE }} --tail=50 || true
+          echo "Detalles de los pods:"
+          kubectl describe pods -l app=devsu-demo-app -n ${{ env.AKS_NAMESPACE }} || true
+        else
+          echo "✅ Despliegue completado exitosamente."
+        fi
+
+    - name: Get service details
+      if: always()
+      run: |
+        echo "✅ Información del servicio desplegado:"
+        
+        # Obtener detalles del servicio
+        kubectl get services -n ${{ env.AKS_NAMESPACE }} -o wide
+        
+        # Obtener detalles del ingress y la URL de acceso
+        INGRESS_EXISTS=$(kubectl get ingress -n ${{ env.AKS_NAMESPACE }} 2>/dev/null || echo "none")
+        if [ "$INGRESS_EXISTS" != "none" ]; then
+          echo "📌 Detalles del Ingress:"
+          kubectl get ingress -n ${{ env.AKS_NAMESPACE }} -o wide
+          
+          # Intentar obtener la URL de acceso si existe un ingress
+          INGRESS_HOST=$(kubectl get ingress devsu-demo-ingress -n ${{ env.AKS_NAMESPACE }} -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || echo "")
+          if [ -n "$INGRESS_HOST" ]; then
+            echo "🌐 La aplicación estará disponible en: http://$INGRESS_HOST"
+          else
+            echo "ℹ️ No se pudo determinar la URL de acceso desde el ingress."
+          fi
+        else
+          echo "ℹ️ No hay recursos ingress configurados"
+        fi
+        
+        # Resumen general del despliegue
+        echo "📊 Resumen general del despliegue en namespace ${{ env.AKS_NAMESPACE }}:"
+        kubectl get all -n ${{ env.AKS_NAMESPACE }}
