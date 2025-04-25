@@ -11,7 +11,6 @@ permissions:
   contents: read
   id-token: write # Necesario para la autenticación OIDC de Azure
   packages: write
-  actions: write # Necesario para subir artefactos
 
 env:
   DOCKER_REGISTRY: ghcr.io
@@ -24,21 +23,28 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@5a4ac9002d0be2fb38bd78e4b4dbde5606d7042f # v2.3.4
-      
+    - uses: actions/checkout@v3
+
     - name: Set up Python
-      uses: actions/setup-python@d27e3f3d7c64b4bbf8e4abfb9b63b83e846e0435 # v2.2.1
+      uses: actions/setup-python@v4
       with:
         python-version: '3.9'
-      
-    - name: Generate setup report
-      run: |
-        mkdir -p reports/setup
-        python --version > reports/setup/python_version.txt
-        echo "Setup completo para el entorno de testing" >> reports/setup/setup_summary.txt
-        ls -la >> reports/setup/project_structure.txt
 
     - name: Install dependencies
       run: |
@@ -46,60 +52,32 @@ jobs:
         if [ -f requirements.txt ]; then
           pip install -r requirements.txt
         else
-          echo "No se encontró requirements.txt. Intente verificar la estructura del proyecto."
+          echo "⚠️ No se encontró requirements.txt. Intente verificar la estructura del proyecto."
         fi
         pip install pytest pytest-django pytest-cov flake8 bandit
-        
-        # Guardar registro de dependencias
-        mkdir -p reports/dependencies
-        pip freeze > reports/dependencies/installed_packages.txt
-        echo "Instalación de dependencias completada" >> reports/dependencies/dependencies_summary.txt
 
     - name: Static code analysis (Flake8)
       run: |
-        mkdir -p reports/flake8
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics > reports/flake8/critical_issues.txt
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics > reports/flake8/all_issues.txt
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
     - name: Security analysis (Bandit)
       run: |
-        mkdir -p reports/security
-        bandit -r . -x tests/ -f json -o reports/security/bandit-results.json || echo "Advertencia: Bandit encontró posibles problemas de seguridad"
+        bandit -r . -x tests/ -f json -o bandit-results.json || echo "Advertencia: Bandit encontró posibles problemas de seguridad"
 
     - name: Run tests with coverage
       env:
+        DATABASE_URL: postgres://postgres:postgres@localhost:5432/test_db
         SECRET_KEY: testsecretkey
         DEBUG: 'True'
       run: |
-        mkdir -p reports/tests
-        pytest --cov=. --cov-report=xml:reports/tests/coverage.xml --cov-report=html:reports/tests/coverage_html/ || echo "Advertencia: Algunas pruebas fallaron. Revisando qué falló"
-        
-        # Generar resumen de pruebas
-        echo "Pruebas y cobertura completadas" > reports/tests/test_summary.txt
-        echo "Fecha de ejecución: $(date)" >> reports/tests/test_summary.txt
+        pytest --cov=. --cov-report=xml || echo "Advertencia: Algunas pruebas fallaron. Revisando qué falló"
 
-    # Combinamos todos los informes en un solo directorio para subirlos de una vez
-    - name: Consolidate reports
-      run: |
-        mkdir -p test_evidence
-        cp -r reports/* test_evidence/
-        echo "Informe consolidado de pruebas" > test_evidence/summary.txt
-        echo "Fecha: $(date)" >> test_evidence/summary.txt
-        echo "Entorno: Ubuntu latest" >> test_evidence/summary.txt
-        echo "Python: $(python --version)" >> test_evidence/summary.txt
-        ls -la test_evidence/ >> test_evidence/directory_listing.txt
-    
-    # Usamos la acción de GitHub Action directamente llamando al comando sin la acción
-    - name: Upload test evidence
-      run: |
-        if [ -d "test_evidence" ]; then
-          echo "Archivando evidencias de pruebas..."
-          mkdir -p $GITHUB_WORKSPACE/artifacts
-          tar -czf $GITHUB_WORKSPACE/artifacts/test_evidence.tar.gz test_evidence/
-          echo "Evidencias archivadas en: $GITHUB_WORKSPACE/artifacts/test_evidence.tar.gz"
-        else
-          echo "No se encontró el directorio test_evidence para archivar"
-        fi
+    - name: Upload coverage report
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: false
 
   build-and-push:
     needs: [test]
@@ -107,43 +85,25 @@ jobs:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@5a4ac9002d0be2fb38bd78e4b4dbde5606d7042f # v2.3.4
+    - uses: actions/checkout@v3
 
     - name: Verify project structure
       run: |
-        mkdir -p reports/build
-        echo "Verificando estructura del proyecto..." > reports/build/structure_check.txt
+        echo "Verificando estructura del proyecto..."
         if [ ! -f "Dockerfile" ]; then
-          echo "No se encontró Dockerfile en la raíz del proyecto" >> reports/build/structure_check.txt
-          ls -la >> reports/build/project_structure.txt
-        else
-          echo "Dockerfile encontrado correctamente" >> reports/build/structure_check.txt
+          echo "⚠️ No se encontró Dockerfile en la raíz del proyecto"
+          ls -la
         fi
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v1
-
-    - name: Generate buildx info
-      run: |
-        mkdir -p reports/docker
-        docker buildx version > reports/docker/buildx_version.txt
-        docker info > reports/docker/docker_info.txt
+      uses: docker/setup-buildx-action@v2
 
     - name: Log in to GitHub Container Registry
-      uses: docker/login-action@28218f9b04b4f3f62068d7b6ce6ca5b26e35336c # v1.0.0
+      uses: docker/login-action@v2
       with:
         registry: ${{ env.DOCKER_REGISTRY }}
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-        
-    - name: Create docker login report
-      run: |
-        mkdir -p reports/registry
-        echo "Inicio de sesión completado en el registro de contenedores" > reports/registry/login_status.txt
-        echo "Registry: ${{ env.DOCKER_REGISTRY }}" >> reports/registry/login_status.txt
-        echo "Usuario: ${{ github.actor }}" >> reports/registry/login_status.txt
-        echo "Fecha: $(date)" >> reports/registry/login_status.txt
 
     - name: Set image tag
       id: set_image_tag
@@ -154,15 +114,9 @@ jobs:
         # Formato de tag: latest y sha-SHORT_SHA
         echo "IMAGE_TAG=sha-$SHA_SHORT" >> $GITHUB_ENV
         echo "FULL_IMAGE_NAME=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$SHA_SHORT" >> $GITHUB_ENV
-        
-        # Crear reporte
-        mkdir -p reports/image
-        echo "SHA Corto: $SHA_SHORT" > reports/image/image_tag_info.txt
-        echo "Tag de imagen: sha-$SHA_SHORT" >> reports/image/image_tag_info.txt
-        echo "Nombre completo de imagen: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$SHA_SHORT" >> reports/image/image_tag_info.txt
 
     - name: Build and push
-      uses: docker/build-push-action@ac9327eae2b366085ac7f6a2d02df8aa8ead720a # v2.0.0
+      uses: docker/build-push-action@v4
       with:
         context: .
         push: true
@@ -174,91 +128,30 @@ jobs:
           org.opencontainers.image.revision=${{ github.sha }}
         cache-from: type=registry,ref=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
         cache-to: type=registry,ref=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
-        
-    - name: Generate build report
-      run: |
-        mkdir -p reports/build_result
-        echo "Build y push completados" > reports/build_result/build_summary.txt
-        echo "Imagen: ${{ env.FULL_IMAGE_NAME }}" >> reports/build_result/build_summary.txt
-        echo "Tags: ${{ env.IMAGE_TAG }}, latest" >> reports/build_result/build_summary.txt
-        echo "Fecha: $(date)" >> reports/build_result/build_summary.txt
 
     - name: Verify image exists
       run: |
-        mkdir -p reports/image_verify
-        echo "Verificando que la imagen existe en el registro..." > reports/image_verify/image_check.txt
-        echo "Imagen a verificar: ${{ env.FULL_IMAGE_NAME }}" >> reports/image_verify/image_check.txt
+        echo "Verificando que la imagen existe en el registro..."
+        echo "Imagen a verificar: ${{ env.FULL_IMAGE_NAME }}"
         
         # Pull de la imagen para asegurarnos que existe localmente
         docker pull ${{ env.FULL_IMAGE_NAME }}
-        docker images | grep ${{ env.IMAGE_NAME }} > reports/image_verify/image_exists.txt
+        docker images | grep ${{ env.IMAGE_NAME }}
 
     - name: Scan Docker image for vulnerabilities
-      run: |
-        mkdir -p reports/security
-        echo "Escaneando imagen ${{ env.FULL_IMAGE_NAME }} por vulnerabilidades..." > reports/security/scan_log.txt
-        # Usar trivy directamente en lugar de la acción para mayor control
-        docker run --rm \
-          -v /var/run/docker.sock:/var/run/docker.sock \
-          -v $(pwd)/reports/security:/reports \
-          aquasec/trivy:latest image \
-          --format json \
-          --output /reports/trivy-results.json \
-          ${{ env.FULL_IMAGE_NAME }} || echo "Trivy encontró vulnerabilidades pero continuamos"
-        
-        echo "Escaneo de vulnerabilidades completado" >> reports/security/scan_log.txt
-        
-        # Verificar que se creó el archivo
-        if [ -f "reports/security/trivy-results.json" ]; then
-          echo "Se generó el reporte correctamente en: reports/security/trivy-results.json" >> reports/security/scan_log.txt
-          # Contar las vulnerabilidades por severidad
-          jq '.Results[].Vulnerabilities[] | .Severity' reports/security/trivy-results.json | sort | uniq -c > reports/security/vulnerability_summary.txt || echo "No se pudo procesar el archivo JSON" >> reports/security/scan_log.txt
-        else
-          echo "No se pudo generar el reporte de Trivy" >> reports/security/scan_log.txt
-        fi
-      
-    - name: Generate vulnerability scan summary
-      run: |
-        mkdir -p reports/vulnerability
-        echo "Escaneo de vulnerabilidades completado" > reports/vulnerability/scan_summary.txt
-        echo "Imagen escaneada: ${{ env.FULL_IMAGE_NAME }}" >> reports/vulnerability/scan_summary.txt
-        echo "Fecha: $(date)" >> reports/vulnerability/scan_summary.txt
-        
-        # Copiar los resultados si existen
-        if [ -f "reports/security/trivy-results.json" ]; then
-          cp reports/security/trivy-results.json reports/vulnerability/
-          echo "Se adjunta informe detallado en trivy-results.json" >> reports/vulnerability/scan_summary.txt
-        else
-          echo "No se pudo generar el informe detallado de vulnerabilidades" >> reports/vulnerability/scan_summary.txt
-        fi
-        
-        # Copiar el resumen si existe
-        if [ -f "reports/security/vulnerability_summary.txt" ]; then
-          echo -e "\nResumen de vulnerabilidades por severidad:" >> reports/vulnerability/scan_summary.txt
-          cat reports/security/vulnerability_summary.txt >> reports/vulnerability/scan_summary.txt
-        fi
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.FULL_IMAGE_NAME }}
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        severity: 'CRITICAL,HIGH'
+      continue-on-error: true
 
-    # Consolidamos todos los informes en un solo directorio para subirlos de una vez
-    - name: Consolidate build reports
-      run: |
-        mkdir -p build_evidence
-        cp -r reports/* build_evidence/
-        echo "Informe consolidado de build y push" > build_evidence/summary.txt
-        echo "Fecha: $(date)" >> build_evidence/summary.txt
-        echo "Imagen: ${{ env.FULL_IMAGE_NAME }}" >> build_evidence/summary.txt
-        ls -la build_evidence/ >> build_evidence/directory_listing.txt
-    
-    # Usamos el comando nativo en lugar de la acción
-    - name: Archive build evidence
-      run: |
-        if [ -d "build_evidence" ]; then
-          echo "Archivando evidencias de build..."
-          mkdir -p $GITHUB_WORKSPACE/artifacts
-          tar -czf $GITHUB_WORKSPACE/artifacts/build_evidence.tar.gz build_evidence/
-          echo "Evidencias archivadas en: $GITHUB_WORKSPACE/artifacts/build_evidence.tar.gz"
-        else
-          echo "No se encontró el directorio build_evidence para archivar"
-        fi
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'
+      continue-on-error: true
 
   deploy:
     needs: [build-and-push]
@@ -266,74 +159,44 @@ jobs:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@5a4ac9002d0be2fb38bd78e4b4dbde5606d7042f # v2.3.4
+    - uses: actions/checkout@v3
 
     - name: Set image tag
       run: |
         # Usar mismo formato de tag que en build-and-push
         SHA_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
         echo "IMAGE_TAG=sha-$SHA_SHORT" >> $GITHUB_ENV
-        
-        # Crear reporte
-        mkdir -p reports/deploy
-        echo "Tag de imagen para despliegue: sha-$SHA_SHORT" > reports/deploy/deployment_tag.txt
 
     - name: Set up kubectl
-      uses: azure/setup-kubectl@v1
+      uses: azure/setup-kubectl@v3
 
-    - name: Generate kubectl info
-      run: |
-        mkdir -p reports/kubectl
-        kubectl version --client > reports/kubectl/kubectl_version.txt
-
-    # Login con credenciales a Azure
+    # Corregido para usar autenticación con creds
     - name: Azure login
       uses: azure/login@v1
       with:
         creds: ${{ secrets.AZURE_CREDENTIALS }}
         enable-AzPSSession: false
-        
-    - name: Generate Azure login report
-      run: |
-        mkdir -p reports/azure
-        echo "Login a Azure completado" > reports/azure/azure_login.txt
-        echo "Fecha: $(date)" >> reports/azure/azure_login.txt
 
     - name: Get AKS credentials
-      uses: azure/aks-set-context@v1
+      uses: azure/aks-set-context@v3
       with:
         resource-group: ${{ env.AKS_RESOURCE_GROUP }}
         cluster-name: ${{ env.AKS_CLUSTER_NAME }}
-        
-    - name: Generate AKS credentials report
-      run: |
-        mkdir -p reports/aks
-        echo "Contexto de AKS obtenido correctamente" > reports/aks/aks_context.txt
-        echo "Cluster: ${{ env.AKS_CLUSTER_NAME }}" >> reports/aks/aks_context.txt
-        echo "Resource Group: ${{ env.AKS_RESOURCE_GROUP }}" >> reports/aks/aks_context.txt
-        echo "Fecha: $(date)" >> reports/aks/aks_context.txt
 
     - name: Create namespace if it doesn't exist
       run: |
         kubectl create namespace ${{ env.AKS_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
-        
-        # Crear reporte
-        mkdir -p reports/namespace
-        echo "Namespace verificado/creado: ${{ env.AKS_NAMESPACE }}" > reports/namespace/namespace_status.txt
-        kubectl get namespace ${{ env.AKS_NAMESPACE }} -o yaml > reports/namespace/namespace_details.yaml
 
     - name: Verify Kubernetes directory
       run: |
-        mkdir -p reports/k8s_manifests
         if [ ! -d "kubernetes" ]; then
-          echo "Error: No se encontró el directorio kubernetes que contiene los manifiestos de despliegue." > reports/k8s_manifests/directory_check.txt
-          ls -la > reports/k8s_manifests/root_directory.txt
+          echo "❌ Error: No se encontró el directorio kubernetes que contiene los manifiestos de despliegue."
+          ls -la
           exit 1
         else
-          echo "Se encontró el directorio kubernetes." > reports/k8s_manifests/directory_check.txt
-          echo "Manifiestos disponibles:" >> reports/k8s_manifests/directory_check.txt
-          ls -la kubernetes/ >> reports/k8s_manifests/directory_check.txt
+          echo "✅ Se encontró el directorio kubernetes."
+          echo "Manifiestos disponibles:"
+          ls -la kubernetes/
         fi
 
     - name: Apply Kubernetes manifests
@@ -342,126 +205,65 @@ jobs:
         export DOCKER_REGISTRY=${{ env.DOCKER_REGISTRY }}
         export IMAGE_NAME=${{ env.IMAGE_NAME }}
         
-        mkdir -p reports/manifests
-        echo "Reemplazando variables en los manifiestos Kubernetes..." > reports/manifests/apply_log.txt
+        echo "Reemplazando variables en los manifiestos Kubernetes..."
         for file in kubernetes/*.yaml kubernetes/*.yml; do
           if [ -f "$file" ]; then
-            echo "Procesando $file" >> reports/manifests/apply_log.txt
+            echo "Procesando $file"
             envsubst < $file > temp.yaml
             mv temp.yaml $file
-            # Guardar una copia del manifiesto procesado
-            cp $file reports/manifests/$(basename $file)
           fi
         done
         
-        echo "Aplicando manifiestos en el namespace ${{ env.AKS_NAMESPACE }}..." >> reports/manifests/apply_log.txt
-        kubectl apply -f kubernetes/ -n ${{ env.AKS_NAMESPACE }} >> reports/manifests/apply_results.txt 2>&1
+        echo "Aplicando manifiestos en el namespace ${{ env.AKS_NAMESPACE }}..."
+        kubectl apply -f kubernetes/ -n ${{ env.AKS_NAMESPACE }}
         
-        echo "Manifiestos aplicados:" >> reports/manifests/apply_log.txt
-        kubectl get deployments,services,ingress,configmap,secret -n ${{ env.AKS_NAMESPACE }} -o wide >> reports/manifests/resources_created.txt
+        echo "Manifiestos aplicados:"
+        kubectl get deployments,services,ingress,configmap,secret -n ${{ env.AKS_NAMESPACE }} -o wide
 
     - name: Verify deployment
       run: |
-        mkdir -p reports/deployment_status
-        echo "Verificando estado del despliegue..." > reports/deployment_status/verification_log.txt
-        kubectl rollout status deployment/devsu-demo-app -n ${{ env.AKS_NAMESPACE }} --timeout=300s >> reports/deployment_status/rollout_status.txt 2>&1 || true
+        echo "Verificando estado del despliegue..."
+        kubectl rollout status deployment/devsu-demo-app -n ${{ env.AKS_NAMESPACE }} --timeout=300s || true
         
         # Comprobar si el despliegue realmente falló o solo tardó más de lo esperado
         DEPLOY_STATUS=$(kubectl get deployment devsu-demo-app -n ${{ env.AKS_NAMESPACE }} -o jsonpath='{.status.conditions[?(@.type=="Available")].status}')
         if [ "$DEPLOY_STATUS" != "True" ]; then
-          echo "El despliegue no está disponible aún. Comprobando logs y eventos..." >> reports/deployment_status/verification_log.txt
-          echo "Eventos del namespace:" >> reports/deployment_status/verification_log.txt
-          kubectl get events -n ${{ env.AKS_NAMESPACE }} --sort-by='.lastTimestamp' | tail -n 20 > reports/deployment_status/events.txt
-          echo "Logs de los pods (si existen):" >> reports/deployment_status/verification_log.txt
-          kubectl logs -l app=devsu-demo-app -n ${{ env.AKS_NAMESPACE }} --tail=50 > reports/deployment_status/pod_logs.txt 2>&1 || true
-          echo "Detalles de los pods:" >> reports/deployment_status/verification_log.txt
-          kubectl describe pods -l app=devsu-demo-app -n ${{ env.AKS_NAMESPACE }} > reports/deployment_status/pod_details.txt 2>&1 || true
+          echo "⚠️ El despliegue no está disponible aún. Comprobando logs y eventos..."
+          echo "Eventos del namespace:"
+          kubectl get events -n ${{ env.AKS_NAMESPACE }} --sort-by='.lastTimestamp' | tail -n 20
+          echo "Logs de los pods (si existen):"
+          kubectl logs -l app=devsu-demo-app -n ${{ env.AKS_NAMESPACE }} --tail=50 || true
+          echo "Detalles de los pods:"
+          kubectl describe pods -l app=devsu-demo-app -n ${{ env.AKS_NAMESPACE }} || true
         else
-          echo "Despliegue completado exitosamente." >> reports/deployment_status/verification_log.txt
+          echo "✅ Despliegue completado exitosamente."
         fi
 
     - name: Get service details
       if: always()
       run: |
-        mkdir -p reports/service_details
-        echo "Información del servicio desplegado:" > reports/service_details/services_summary.txt
+        echo "✅ Información del servicio desplegado:"
         
         # Obtener detalles del servicio
-        kubectl get services -n ${{ env.AKS_NAMESPACE }} -o wide > reports/service_details/services.txt
+        kubectl get services -n ${{ env.AKS_NAMESPACE }} -o wide
         
         # Obtener detalles del ingress y la URL de acceso
         INGRESS_EXISTS=$(kubectl get ingress -n ${{ env.AKS_NAMESPACE }} 2>/dev/null || echo "none")
         if [ "$INGRESS_EXISTS" != "none" ]; then
-          echo "Detalles del Ingress:" >> reports/service_details/services_summary.txt
-          kubectl get ingress -n ${{ env.AKS_NAMESPACE }} -o wide > reports/service_details/ingress.txt
+          echo "📌 Detalles del Ingress:"
+          kubectl get ingress -n ${{ env.AKS_NAMESPACE }} -o wide
           
           # Intentar obtener la URL de acceso si existe un ingress
           INGRESS_HOST=$(kubectl get ingress devsu-demo-ingress -n ${{ env.AKS_NAMESPACE }} -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || echo "")
           if [ -n "$INGRESS_HOST" ]; then
-            echo "La aplicación estará disponible en: http://$INGRESS_HOST" >> reports/service_details/access_url.txt
+            echo "🌐 La aplicación estará disponible en: http://$INGRESS_HOST"
           else
-            echo "No se pudo determinar la URL de acceso desde el ingress." >> reports/service_details/access_url.txt
+            echo "ℹ️ No se pudo determinar la URL de acceso desde el ingress."
           fi
         else
-          echo "No hay recursos ingress configurados" >> reports/service_details/services_summary.txt
+          echo "ℹ️ No hay recursos ingress configurados"
         fi
         
         # Resumen general del despliegue
-        echo "Resumen general del despliegue en namespace ${{ env.AKS_NAMESPACE }}:" >> reports/service_details/services_summary.txt
-        kubectl get all -n ${{ env.AKS_NAMESPACE }} > reports/service_details/all_resources.txt
-
-    - name: Generate deployment summary
-      run: |
-        mkdir -p reports/final_summary
-        echo "Resumen de despliegue completo" > reports/final_summary/deployment_summary.txt
-        echo "Fecha: $(date)" >> reports/final_summary/deployment_summary.txt
-        echo "Rama: ${{ github.ref }}" >> reports/final_summary/deployment_summary.txt
-        echo "Commit: ${{ github.sha }}" >> reports/final_summary/deployment_summary.txt
-        echo "Imagen: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}" >> reports/final_summary/deployment_summary.txt
-        echo "Cluster: ${{ env.AKS_CLUSTER_NAME }}" >> reports/final_summary/deployment_summary.txt
-        echo "Namespace: ${{ env.AKS_NAMESPACE }}" >> reports/final_summary/deployment_summary.txt
-    
-    # Consolidamos todos los informes en un solo directorio para subirlos de una vez
-    - name: Consolidate deployment reports
-      run: |
-        mkdir -p deployment_evidence
-        cp -r reports/* deployment_evidence/
-        echo "Informe consolidado de despliegue" > deployment_evidence/summary.txt
-        echo "Fecha: $(date)" >> deployment_evidence/summary.txt
-        echo "Namespace: ${{ env.AKS_NAMESPACE }}" >> deployment_evidence/summary.txt
-        echo "Imagen: ${{ env.FULL_IMAGE_NAME }}" >> deployment_evidence/summary.txt
-        ls -la deployment_evidence/ >> deployment_evidence/directory_listing.txt
-    
-    # Usamos el comando nativo en lugar de la acción
-    - name: Archive deployment evidence
-      run: |
-        if [ -d "deployment_evidence" ]; then
-          echo "Archivando evidencias de despliegue..."
-          mkdir -p $GITHUB_WORKSPACE/artifacts
-          tar -czf $GITHUB_WORKSPACE/artifacts/deployment_evidence.tar.gz deployment_evidence/
-          echo "Evidencias archivadas en: $GITHUB_WORKSPACE/artifacts/deployment_evidence.tar.gz"
-        else
-          echo "No se encontró el directorio deployment_evidence para archivar"
-        fi
-        
-    # Crear un único archivo consolidado con todas las evidencias
-    - name: Create consolidated evidence archive
-      run: |
-        mkdir -p consolidated_evidence
-        echo "Evidencia consolidada de todo el proceso CI/CD" > consolidated_evidence/readme.txt
-        echo "Fecha de ejecución: $(date)" >> consolidated_evidence/readme.txt
-        echo "Commit: ${{ github.sha }}" >> consolidated_evidence/readme.txt
-        
-        # Copiar todos los artefactos si existen
-        if [ -d "$GITHUB_WORKSPACE/artifacts" ]; then
-          cp -r $GITHUB_WORKSPACE/artifacts/* consolidated_evidence/
-        fi
-        
-        # Copiar todos los informes
-        if [ -d "reports" ]; then
-          cp -r reports/* consolidated_evidence/
-        fi
-        
-        # Crear un archivo tar.gz con todo
-        tar -czf all_evidence.tar.gz consolidated_evidence/
-        echo "Todas las evidencias consolidadas en: all_evidence.tar.gz"
+        echo "📊 Resumen general del despliegue en namespace ${{ env.AKS_NAMESPACE }}:"
+        kubectl get all -n ${{ env.AKS_NAMESPACE }}
