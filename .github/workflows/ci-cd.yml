@@ -39,9 +39,6 @@ jobs:
         python --version > reports/setup/python_version.txt
         echo "Setup completo para el entorno de testing" >> reports/setup/setup_summary.txt
         ls -la >> reports/setup/project_structure.txt
-      
-    # En lugar de usar upload-artifact, simplemente guardamos los informes para su uso posterior
-    # y generamos un informe consolidado al final
 
     - name: Install dependencies
       run: |
@@ -197,13 +194,28 @@ jobs:
         docker images | grep ${{ env.IMAGE_NAME }} > reports/image_verify/image_exists.txt
 
     - name: Scan Docker image for vulnerabilities
-      uses: aquasecurity/trivy-action@master
-      with:
-        image-ref: ${{ env.FULL_IMAGE_NAME }}
-        format: 'sarif'
-        output: 'reports/security/trivy-results.sarif'
-        severity: 'CRITICAL,HIGH'
-      continue-on-error: true
+      run: |
+        mkdir -p reports/security
+        echo "Escaneando imagen ${{ env.FULL_IMAGE_NAME }} por vulnerabilidades..." > reports/security/scan_log.txt
+        # Usar trivy directamente en lugar de la acción para mayor control
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          -v $(pwd)/reports/security:/reports \
+          aquasec/trivy:latest image \
+          --format json \
+          --output /reports/trivy-results.json \
+          ${{ env.FULL_IMAGE_NAME }} || echo "Trivy encontró vulnerabilidades pero continuamos"
+        
+        echo "Escaneo de vulnerabilidades completado" >> reports/security/scan_log.txt
+        
+        # Verificar que se creó el archivo
+        if [ -f "reports/security/trivy-results.json" ]; then
+          echo "Se generó el reporte correctamente en: reports/security/trivy-results.json" >> reports/security/scan_log.txt
+          # Contar las vulnerabilidades por severidad
+          jq '.Results[].Vulnerabilities[] | .Severity' reports/security/trivy-results.json | sort | uniq -c > reports/security/vulnerability_summary.txt || echo "No se pudo procesar el archivo JSON" >> reports/security/scan_log.txt
+        else
+          echo "No se pudo generar el reporte de Trivy" >> reports/security/scan_log.txt
+        fi
       
     - name: Generate vulnerability scan summary
       run: |
@@ -211,7 +223,20 @@ jobs:
         echo "Escaneo de vulnerabilidades completado" > reports/vulnerability/scan_summary.txt
         echo "Imagen escaneada: ${{ env.FULL_IMAGE_NAME }}" >> reports/vulnerability/scan_summary.txt
         echo "Fecha: $(date)" >> reports/vulnerability/scan_summary.txt
-        cp reports/security/trivy-results.sarif reports/vulnerability/
+        
+        # Copiar los resultados si existen
+        if [ -f "reports/security/trivy-results.json" ]; then
+          cp reports/security/trivy-results.json reports/vulnerability/
+          echo "Se adjunta informe detallado en trivy-results.json" >> reports/vulnerability/scan_summary.txt
+        else
+          echo "No se pudo generar el informe detallado de vulnerabilidades" >> reports/vulnerability/scan_summary.txt
+        fi
+        
+        # Copiar el resumen si existe
+        if [ -f "reports/security/vulnerability_summary.txt" ]; then
+          echo -e "\nResumen de vulnerabilidades por severidad:" >> reports/vulnerability/scan_summary.txt
+          cat reports/security/vulnerability_summary.txt >> reports/vulnerability/scan_summary.txt
+        fi
 
     # Consolidamos todos los informes en un solo directorio para subirlos de una vez
     - name: Consolidate build reports
